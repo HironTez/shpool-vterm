@@ -164,6 +164,18 @@ impl Term {
         // Painting onto a stranded alt screen would also throw away every
         // line that scrolls off the top of it.
         controls.disable_alt_screen.term_input_into(&mut buf);
+
+        // Each screen has its own kitty keyboard flags, and the alt screen's
+        // come back the next time an app switches to it, so empty both
+        // stacks. A pop that empties a stack also clears flags set with
+        // nothing pushed.
+        let empty_keyboard_stack =
+            ControlCodes::kitty_keyboard_pop(Some(KEYBOARD_STACK_RESET_POPS));
+        empty_keyboard_stack.term_input_into(&mut buf);
+        controls.enable_alt_screen.term_input_into(&mut buf);
+        empty_keyboard_stack.term_input_into(&mut buf);
+        controls.disable_alt_screen.term_input_into(&mut buf);
+
         controls.clear_attrs.term_input_into(&mut buf);
 
         // A leftover scroll region or origin mode would scroll the
@@ -186,10 +198,12 @@ impl Term {
         controls.designate_g3_us_ascii.term_input_into(&mut buf);
         controls.shift_in.term_input_into(&mut buf);
 
-        // An app that hid the cursor and never got the chance to show it
-        // again would leave it hidden for good, and one that turned on reverse
-        // video for the whole screen would leave every color inverted.
+        // An app that hid the cursor or changed its shape and never got the
+        // chance to put it back would leave it that way for good, and one that
+        // turned on reverse video for the whole screen would leave every color
+        // inverted.
         controls.show_cursor.term_input_into(&mut buf);
+        term::CursorStyle::Default.term_input_into(&mut buf);
         controls.disable_reverse_screen.term_input_into(&mut buf);
 
         // These change what the terminal sends rather than what it shows,
@@ -200,6 +214,7 @@ impl Term {
         ControlCodes::dec_private_modes_reset(&MOUSE_MODES).term_input_into(&mut buf);
         controls.disable_report_focus.term_input_into(&mut buf);
         controls.disable_paste_mode.term_input_into(&mut buf);
+        ControlCodes::xtmodkeys_reset(4).term_input_into(&mut buf);
         // LNM makes Enter send CR LF. It makes LF do a CR too, but painting
         // always sends CR LF anyway.
         controls.disable_linefeed_newline_mode.term_input_into(&mut buf);
@@ -308,6 +323,58 @@ impl std::fmt::Display for Term {
 /// disagreeing about the wire format.
 const MOUSE_MODES: [u16; 7] = [1000, 1002, 1003, 1005, 1006, 1015, 1016];
 
+/// How many kitty keyboard flag entries each screen keeps. kitty and
+/// Ghostty keep 8, dropping the oldest when an app pushes more.
+const KEYBOARD_STACK_LEN: usize = 8;
+
+/// How many entries a restore pops off each of the client's kitty keyboard
+/// flag stacks to empty them. Some terminals keep far more than 8 entries,
+/// so this is more than apps push in practice rather than a stack length.
+const KEYBOARD_STACK_RESET_POPS: u16 = 99;
+
+/// The kitty keyboard protocol flags of one screen: a stack the app pushes
+/// onto (`CSI > flags u`), pops (`CSI < n u`) and changes the top of
+/// (`CSI = flags ; mode u`). The flags change what the client sends for
+/// keypresses, so the app's have to survive a reattach and an earlier
+/// session's must not.
+///
+/// Like in kitty, setting the flags with nothing pushed starts the stack.
+#[derive(Default)]
+struct KeyboardFlags {
+    stack: Vec<u16>,
+}
+
+impl KeyboardFlags {
+    fn push(&mut self, flags: u16) {
+        if self.stack.len() == KEYBOARD_STACK_LEN {
+            self.stack.remove(0);
+        }
+        self.stack.push(flags);
+    }
+
+    fn pop(&mut self, n: u16) {
+        self.stack.truncate(self.stack.len().saturating_sub(n.into()));
+    }
+
+    fn set(&mut self, flags: u16, mode: u16) {
+        let top = self.stack.pop().unwrap_or(0);
+        self.stack.push(match mode {
+            1 => flags,
+            2 => top | flags,
+            3 => top & !flags,
+            _ => top, // undefined; the flags stay as they are
+        });
+    }
+
+    /// Rebuild this stack on a terminal whose stack for the same screen is
+    /// empty, as the restore prefix leaves it.
+    fn dump_into(&self, buf: &mut Vec<u8>) {
+        for flags in self.stack.iter() {
+            ControlCodes::kitty_keyboard_push(*flags).term_input_into(buf);
+        }
+    }
+}
+
 /// The index into `State::mouse_modes` for a DEC private mode parameter.
 fn mouse_mode_idx(param: &[u16]) -> Option<usize> {
     match param {
@@ -410,6 +477,14 @@ struct State {
     /// collapsed into a single effective mode, since the application will
     /// expect everything it set to still be in force after a reattach.
     mouse_modes: [bool; MOUSE_MODES.len()],
+    /// The kitty keyboard flags of the main screen and of the alt screen.
+    /// Each screen has its own, and switching screens switches between them.
+    scrollback_keyboard_flags: KeyboardFlags,
+    altscreen_keyboard_flags: KeyboardFlags,
+    /// xterm's modifyOtherKeys level (`CSI > 4 ; level m`), which makes the
+    /// client send keys like Ctrl-Enter as escape sequences. None when it is
+    /// off.
+    modify_other_keys: Option<u16>,
     /// The charsets printed chars get translated through. Apps switch to
     /// the DEC special graphics set to draw lines and boxes.
     charsets: Charsets,
@@ -447,6 +522,9 @@ impl State {
             modes: Modes::empty(),
             cursor_blinking: None,
             mouse_modes: [false; MOUSE_MODES.len()],
+            scrollback_keyboard_flags: KeyboardFlags::default(),
+            altscreen_keyboard_flags: KeyboardFlags::default(),
+            modify_other_keys: None,
             charsets: Charsets::default(),
             tabstops: bitvec![0; size.width],
             last_print_char: None,
@@ -545,9 +623,23 @@ impl State {
     fn dump_contents_into(&self, buf: &mut Vec<u8>, dump_region: ContentRegion) {
         self.dump_tabstops(buf);
 
-        self.screen.dump_contents_into(buf, dump_region);
-
         let controls = term::control_codes();
+
+        // Keyboard flags only reach the active screen, so the main screen's go
+        // in before the alt screen gets painted, and an inactive alt screen's
+        // through a trip to it, for when an app switches back to it. The
+        // cursor is home with default attrs here, so the trip's save and
+        // restore of it change nothing.
+        self.scrollback_keyboard_flags.dump_into(buf);
+        if !self.screen.alt_active() && !self.altscreen_keyboard_flags.stack.is_empty() {
+            controls.enable_alt_screen.term_input_into(buf);
+            self.altscreen_keyboard_flags.dump_into(buf);
+            controls.disable_alt_screen.term_input_into(buf);
+        }
+        self.screen.dump_contents_into(buf, dump_region);
+        if self.screen.alt_active() {
+            self.altscreen_keyboard_flags.dump_into(buf);
+        }
 
         // restore cursor attributes (the screen will have already restored our
         // position).
@@ -647,6 +739,9 @@ impl State {
             if self.mouse_modes[idx] {
                 ControlCodes::dec_private_modes_set(&[*mode]).term_input_into(buf);
             }
+        }
+        if let Some(level) = self.modify_other_keys {
+            ControlCodes::xtmodkeys(4, level).term_input_into(buf);
         }
 
         // Generate fused functional color commands from any runs in the
@@ -798,6 +893,15 @@ impl State {
         screen.set_left_right_margin_mode(false);
         screen.set_origin_mode(OriginMode::Term);
         *screen.saved_cursor_mut() = None;
+    }
+
+    /// The kitty keyboard flags of the screen that is active.
+    fn active_keyboard_flags(&mut self) -> &mut KeyboardFlags {
+        if self.screen.alt_active() {
+            &mut self.altscreen_keyboard_flags
+        } else {
+            &mut self.scrollback_keyboard_flags
+        }
     }
 
     /// Switch to the alt screen. With `erase`, the alt screen gets erased
@@ -1409,6 +1513,22 @@ impl vte::Perform for State {
             }
             // SCORC (Restore Cursor, CSI u), which is DECRC all over again.
             'u' if plain => self.restore_cursor(),
+            // The kitty keyboard protocol: push, pop and set the flags of the
+            // active screen. Queries are for the real terminal to answer.
+            'u' if intermediates == [b'>'] => {
+                self.active_keyboard_flags().push(param_or(&mut params_iter, 0));
+            }
+            'u' if intermediates == [b'<'] => {
+                self.active_keyboard_flags().pop(param_or(&mut params_iter, 1));
+            }
+            'u' if intermediates == [b'='] => {
+                let flags = param_or(&mut params_iter, 0);
+                let mode = param_or(&mut params_iter, 1);
+                self.active_keyboard_flags().set(flags, mode);
+            }
+            'u' if intermediates == [b'?'] => {
+                debug!(self.logger, "ignoring kitty keyboard query, that's the real terminal's job")
+            }
 
             // TBC (Tabulation Clear, CSI 3 g, CSI 0 g, CSI g)
             'g' if plain => {
@@ -1563,6 +1683,22 @@ impl vte::Perform for State {
                     params.iter().collect::<Vec<&[u16]>>()
                 ),
             },
+            // XTMODKEYS (`CSI > Pp ; Pv m`) sets one of xterm's key modifier
+            // options, and leaving out Pv puts it back to its default. Only
+            // modifyOtherKeys (4) is tracked. vte reports `CSI > m` (reset
+            // them all) as `CSI > 0 m`, so both turn it off, but `CSI > 0 ; Pv m`
+            // sets another option.
+            'm' if intermediates == [b'>'] => match (maybe_param(&mut params_iter), params_iter.next()) {
+                (Some(4), Some(&[level])) if level != 0 => self.modify_other_keys = Some(level),
+                (Some(4), _) | (None, None) => self.modify_other_keys = None,
+                _ => {}
+            },
+            // XTMODKEYS disable (`CSI > Pp n`) turns a key modifier option off.
+            'n' if intermediates == [b'>'] => {
+                if maybe_param(&mut params_iter) == Some(4) {
+                    self.modify_other_keys = None;
+                }
+            }
             // DSR (Device Status Report)
             'n' => while let Some(param) = params_iter.next() {
                 match param {

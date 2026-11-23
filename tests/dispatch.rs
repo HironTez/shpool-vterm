@@ -18,7 +18,9 @@ frag! {
             reset_codes,
             term::Raw::from("AB"),
             term::ControlCodes::cursor_position(1, 3),
-            term::control_codes().clear_attrs
+            term::control_codes().clear_attrs,
+            // modifyOtherKeys, which is still on
+            term::ControlCodes::xtmodkeys(4, 2)
 }
 
 frag! {
@@ -62,6 +64,8 @@ frag! {
        term::Raw::from("C")
     => ContentRegion::All =>
             reset_codes,
+            // what the set left on the stack
+            term::ControlCodes::kitty_keyboard_push(1),
             term::Raw::from("ABC"),
             term::ControlCodes::cursor_position(1, 4),
             term::control_codes().clear_attrs

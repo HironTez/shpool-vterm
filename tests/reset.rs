@@ -68,6 +68,8 @@ frag! {
        term::ControlCodes::set_color_indices(std::iter::once((1, b"rgb:ff/00/00"[..].into()))),
        term::control_codes().bold,
        term::ControlCodes::fgcolor_idx(1),
+       term::ControlCodes::kitty_keyboard_push(1),
+       term::ControlCodes::xtmodkeys(4, 2),
        term::control_codes().hard_reset
     => ContentRegion::All =>
             reset_codes,

@@ -771,6 +771,231 @@ frag! {
             term::control_codes().enable_application_cursor_keys
 }
 
+// Kitty keyboard flags go in before the contents, while the terminal is on
+// the main screen.
+frag! {
+    kitty_keyboard_flags { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_push(1),
+       term::ControlCodes::kitty_keyboard_push(5),
+       term::Raw::from("a")
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(1),
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::Raw::from("a"),
+            term::ControlCodes::cursor_position(1, 2),
+            term::control_codes().clear_attrs
+}
+
+// The alt screen's flags go in once the restore has switched to it.
+frag! {
+    kitty_keyboard_flags_on_the_alt_screen { scrollback_lines: 10, width: 10, height: 2 }
+    <= term::ControlCodes::kitty_keyboard_push(1),
+       term::control_codes().enable_alt_screen,
+       term::ControlCodes::kitty_keyboard_push(5)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(1),
+            empty_scrollback,
+            term::control_codes().enable_alt_screen,
+            term::Crlf::default(),
+            term::ControlCodes::cursor_position(1, 1),
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().clear_attrs
+    => ContentRegion::Screen =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(1),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().enable_alt_screen,
+            term::Crlf::default(),
+            term::ControlCodes::cursor_position(1, 1),
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().clear_attrs
+}
+
+// An inactive alt screen's flags go in through a trip to it.
+frag! {
+    kitty_keyboard_flags_on_the_inactive_alt_screen { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::control_codes().enable_alt_screen,
+       term::ControlCodes::kitty_keyboard_push(5),
+       term::control_codes().disable_alt_screen
+    => ContentRegion::All =>
+            reset_codes,
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().disable_alt_screen,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+    => ContentRegion::Screen =>
+            reset_codes,
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().disable_alt_screen,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// `?1047` switches screens too, so its flags take the same trip.
+frag! {
+    kitty_keyboard_flags_on_the_inactive_1047_alt_screen { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::Raw::from("\x1b[?1047h"),
+       term::ControlCodes::kitty_keyboard_push(5),
+       term::Raw::from("\x1b[?1047l")
+    => ContentRegion::All =>
+            reset_codes,
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().disable_alt_screen,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// A push without flags pushes 0, and a set without a mode replaces the top.
+frag! {
+    kitty_keyboard_flags_defaults { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::Raw::from("\x1b[>u"),
+       term::Raw::from("\x1b[>u"),
+       term::Raw::from("\x1b[=3u")
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(0),
+            term::ControlCodes::kitty_keyboard_push(3),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// A full stack drops its oldest entry.
+frag! {
+    kitty_keyboard_flags_overflow { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_push(1),
+       term::ControlCodes::kitty_keyboard_push(2),
+       term::ControlCodes::kitty_keyboard_push(3),
+       term::ControlCodes::kitty_keyboard_push(4),
+       term::ControlCodes::kitty_keyboard_push(5),
+       term::ControlCodes::kitty_keyboard_push(6),
+       term::ControlCodes::kitty_keyboard_push(7),
+       term::ControlCodes::kitty_keyboard_push(8),
+       term::ControlCodes::kitty_keyboard_push(9)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(2),
+            term::ControlCodes::kitty_keyboard_push(3),
+            term::ControlCodes::kitty_keyboard_push(4),
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::ControlCodes::kitty_keyboard_push(6),
+            term::ControlCodes::kitty_keyboard_push(7),
+            term::ControlCodes::kitty_keyboard_push(8),
+            term::ControlCodes::kitty_keyboard_push(9),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// Popped flags are gone.
+frag! {
+    kitty_keyboard_flags_popped { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_push(1),
+       term::ControlCodes::kitty_keyboard_pop(None)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// A pop can take several entries, and mode 1 replaces the top one.
+frag! {
+    kitty_keyboard_flags_popped_and_replaced { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_push(1),
+       term::ControlCodes::kitty_keyboard_push(2),
+       term::ControlCodes::kitty_keyboard_push(3),
+       term::ControlCodes::kitty_keyboard_pop(Some(2)),
+       term::ControlCodes::kitty_keyboard_set(4, 1)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(4),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// Mode 3 clears flags on the top entry and mode 2 adds them.
+frag! {
+    kitty_keyboard_flags_changed { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_push(5),
+       term::ControlCodes::kitty_keyboard_set(4, 3),
+       term::ControlCodes::kitty_keyboard_set(2, 2)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(3),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// Setting the flags with nothing pushed starts the stack, like in kitty.
+frag! {
+    kitty_keyboard_flags_set_without_a_push { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::kitty_keyboard_set(5, 1)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// Setting another key modifier option, even to 0, leaves modifyOtherKeys
+// alone.
+frag! {
+    modify_other_keys_and_other_options { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::xtmodkeys(4, 2),
+       term::ControlCodes::xtmodkeys(0, 1),
+       term::ControlCodes::xtmodkeys(0, 0)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs,
+            term::ControlCodes::xtmodkeys(4, 2)
+}
+
+frag! {
+    modify_other_keys_set_to_0 { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::xtmodkeys(4, 2),
+       term::ControlCodes::xtmodkeys(4, 0)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// `CSI > m` resets all of them.
+frag! {
+    modify_other_keys_reset_all { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::xtmodkeys(4, 2),
+       term::Raw::from("\x1b[>m")
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+frag! {
+    modify_other_keys_reset { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::xtmodkeys(4, 2),
+       term::ControlCodes::xtmodkeys_reset(4)
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
+// XTMODKEYS disable (`CSI > 4 n`) turns modifyOtherKeys off too.
+frag! {
+    modify_other_keys_disabled { scrollback_lines: 10, width: 10, height: 10 }
+    <= term::ControlCodes::xtmodkeys(4, 2),
+       term::Raw::from("\x1b[>4n")
+    => ContentRegion::All =>
+            reset_codes,
+            term::ControlCodes::cursor_position(1, 1),
+            term::control_codes().clear_attrs
+}
+
 frag! {
     cursor_style_blink_block { scrollback_lines: 10, width: 10, height: 10 }
     <= term::CursorStyle::BlinkBlock

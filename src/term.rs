@@ -1897,6 +1897,12 @@ impl ControlCodes {
         Self::csi(b">", [resource, value], 'm')
     }
 
+    /// XTMODKEYS with no value (`CSI > Pp m`), which puts one of xterm's key
+    /// modifier options back to its default.
+    pub fn xtmodkeys_reset(resource: u16) -> ControlCode {
+        Self::csi(b">", [resource], 'm')
+    }
+
     /// XTSMGRAPHICS (`CSI ? Pi ; Pa ; Pv S`), which sets or queries xterm's
     /// graphics attributes.
     pub fn xtsmgraphics(item: u16, action: u16, value: u16) -> ControlCode {

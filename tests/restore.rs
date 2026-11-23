@@ -341,3 +341,93 @@ fn leftover_left_right_margins() {
         b"ij",
     );
 }
+
+// Kitty keyboard flags, which an app like an editor or a coding agent pushes
+// when it starts and pops when it exits. The restore has to rebuild the stack
+// so that the pop at exit puts the terminal back where the app found it.
+#[test]
+fn keyboard_flags() {
+    assert_restores(
+        Size { width: 10, height: 3 },
+        &input![
+            term::ControlCodes::kitty_keyboard_push(1),
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::ControlCodes::kitty_keyboard_set(2, 2),
+        ],
+        &input![
+            term::ControlCodes::kitty_keyboard_pop(None),
+            term::ControlCodes::kitty_keyboard_set(8, 2),
+        ],
+    );
+}
+
+// An app that left the alt screen without popping its flags gets them back
+// when it switches to it again.
+#[test]
+fn keyboard_flags_on_the_inactive_alt_screen() {
+    assert_restores(
+        Size { width: 10, height: 3 },
+        &input![
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().disable_alt_screen,
+        ],
+        &input![
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_set(2, 2),
+        ],
+    );
+}
+
+// The trip to the inactive alt screen leaves the cursor the app saved on the
+// main screen alone.
+#[test]
+fn keyboard_flags_on_the_inactive_alt_screen_and_a_saved_cursor() {
+    assert_restores(
+        Size { width: 10, height: 3 },
+        &input![
+            term::Raw::from("$ ls"),
+            term::control_codes().save_cursor,
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+            term::control_codes().disable_alt_screen,
+            term::ControlCodes::cursor_position(3, 1),
+            term::Raw::from("12:00"),
+        ],
+        &input![term::control_codes().restore_cursor, term::Raw::from(" -l")],
+    );
+}
+
+// Each screen has its own flags: an app on the alt screen gets its flags
+// back, and leaving the alt screen goes back to the main screen's.
+#[test]
+fn keyboard_flags_on_both_screens() {
+    assert_restores(
+        Size { width: 10, height: 3 },
+        &input![
+            term::ControlCodes::kitty_keyboard_push(1),
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+        ],
+        &input![
+            term::ControlCodes::kitty_keyboard_pop(None),
+            term::control_codes().disable_alt_screen,
+            term::ControlCodes::kitty_keyboard_set(4, 2),
+        ],
+    );
+}
+
+// Keyboard flags a previous session left on the terminal's alt screen
+// must not come back when an app next switches to it.
+#[test]
+fn leftover_keyboard_flags() {
+    assert_restores_into(
+        &input![
+            term::control_codes().enable_alt_screen,
+            term::ControlCodes::kitty_keyboard_push(5),
+        ],
+        Size { width: 10, height: 3 },
+        b"$ ",
+        &input![term::control_codes().enable_alt_screen, term::Raw::from("x")],
+    );
+}

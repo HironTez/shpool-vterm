@@ -12,6 +12,10 @@ impl shpool_vterm::term::AsTermInput for reset_codes {
         let controls = shpool_vterm::term::control_codes();
         controls.end_link.term_input_into(buf);
         controls.disable_alt_screen.term_input_into(buf);
+        term::ControlCodes::kitty_keyboard_pop(Some(99)).term_input_into(buf);
+        controls.enable_alt_screen.term_input_into(buf);
+        term::ControlCodes::kitty_keyboard_pop(Some(99)).term_input_into(buf);
+        controls.disable_alt_screen.term_input_into(buf);
         controls.clear_attrs.term_input_into(buf);
         controls.unset_scroll_region.term_input_into(buf);
         controls.disable_left_right_margin_mode.term_input_into(buf);
@@ -24,6 +28,7 @@ impl shpool_vterm::term::AsTermInput for reset_codes {
         controls.designate_g3_us_ascii.term_input_into(buf);
         controls.shift_in.term_input_into(buf);
         controls.show_cursor.term_input_into(buf);
+        term::CursorStyle::Default.term_input_into(buf);
         controls.disable_reverse_screen.term_input_into(buf);
         controls.disable_application_cursor_keys.term_input_into(buf);
         controls.disable_application_keypad_mode.term_input_into(buf);
@@ -31,6 +36,7 @@ impl shpool_vterm::term::AsTermInput for reset_codes {
             .term_input_into(buf);
         controls.disable_report_focus.term_input_into(buf);
         controls.disable_paste_mode.term_input_into(buf);
+        term::ControlCodes::xtmodkeys_reset(4).term_input_into(buf);
         controls.disable_linefeed_newline_mode.term_input_into(buf);
         shpool_vterm::term::ControlCodes::cursor_position(1, 1).term_input_into(buf);
         controls.save_cursor.term_input_into(buf);
